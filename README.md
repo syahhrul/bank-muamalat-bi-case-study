@@ -63,7 +63,6 @@ product_category (1) ───< (N) products (1) ───< (N) orders (N) >─�
 ├── master_table.csv              # Final joined & cleaned table (dashboard source)
 ├── bank_muamalat_queries.sql     # Full BigQuery SQL: DDL, PK/FK, master table join
 ├── CaseStudy_BankMuamalat_Final.pptx  # Presentation deck
-├── SOLUTION.md                   # Full written answers (Soal 1–5) + data-permanence fix
 └── README.md
 ```
 
