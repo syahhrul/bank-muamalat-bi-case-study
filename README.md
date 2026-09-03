@@ -73,4 +73,3 @@ product_category (1) ───< (N) products (1) ───< (N) orders (N) >─�
 ## 👤 Author
 
 **Syahrul Mubarak**
-Final-year Informatics student, Universitas Ahmad Dahlan Yogyakarta, focused on data analysis and business intelligence.
