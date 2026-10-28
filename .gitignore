@@ -1,0 +1,20 @@
+# Local-only copies of source datasets that may contain personal fields
+.local_backup/
+
+# Local configuration / secrets
+.env
+.env.*
+!.env.example
+*.json.key
+*service-account*.json
+
+# Python caches and OS files
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+Thumbs.db
+
+# Optional local exports and database artifacts
+*.sqlite
+*.db

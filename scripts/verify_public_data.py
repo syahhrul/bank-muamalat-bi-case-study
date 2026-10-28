@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Validate exported, privacy-safe CSVs without any third-party dependencies.
+
+Usage: python scripts/verify_public_data.py
+       python scripts/verify_public_data.py --write-report
+"""
+
+from __future__ import annotations
+
+import csv
+import sys
+from collections import Counter, defaultdict
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+RAW = ROOT / "data" / "raw"
+MASTER = ROOT / "data" / "processed" / "master_table.csv"
+
+
+def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    with path.open(newline="", encoding="utf-8-sig") as fp:
+        reader = csv.DictReader(fp)
+        fields = list(reader.fieldnames or [])
+        return fields, list(reader)
+
+
+def require(cond: bool, message: str) -> None:
+    if not cond:
+        raise AssertionError(message)
+
+
+def main() -> None:
+    customer_cols, customers = read_csv(RAW / "Customers.csv")
+    _, products = read_csv(RAW / "Products.csv")
+    _, orders = read_csv(RAW / "Orders.csv")
+    _, categories = read_csv(RAW / "ProductCategory.csv")
+    master_cols, master = read_csv(MASTER)
+    require(customer_cols == ["CustomerID", "CustomerCity", "CustomerState"],
+            "Customers.csv must exclude personal fields")
+    require(all(c not in master_cols for c in
+                ("cust_email", "CustomerEmail", "FirstName", "LastName", "CustomerAddress", "CustomerPhone")),
+            "Master table leaks customer fields")
+    for name, records, key in (
+        ("Customers", customers, "CustomerID"), ("Products", products, "ProdNumber"),
+        ("Orders", orders, "OrderID"), ("ProductCategory", categories, "CategoryID"),
+        ("master_table", master, "order_id"),
+    ):
+        require(len(records) == len(set(r[key] for r in records)), f"Duplicate {name} keys")
+        require(all(r[key] for r in records), f"Empty {name} keys")
+    require(len(orders) == len(master), "JOIN changed number of order rows")
+    customer_keys = {r["CustomerID"] for r in customers}
+    product_keys = {r["ProdNumber"] for r in products}
+    category_keys = {r["CategoryID"] for r in categories}
+    require(all(r["CustomerID"] in customer_keys and r["ProdNumber"] in product_keys for r in orders),
+            "Orders contain orphan references")
+    require(all(r["Category"] in category_keys for r in products),
+            "Products contain orphan category references")
+    date_min, date_max = None, None
+    total, units = Decimal("0"), 0
+    yearly = defaultdict(lambda: Decimal("0"))
+    by_category = defaultdict(lambda: [Decimal("0"), 0])
+    purchasers = Counter()
+    for row in master:
+        day = date.fromisoformat(row["order_date"])
+        date_min = min(date_min, day) if date_min else day
+        date_max = max(date_max, day) if date_max else day
+        val = Decimal(row["total_sales"])
+        qty = int(row["order_qty"])
+        require(val == Decimal(row["product_price"]) * qty,
+                f"Wrong calculated sale in {row['order_id']}")
+        require(val >= 0 and qty > 0, "Negative value or nonpositive qty")
+        total += val
+        units += qty
+        yearly[day.year] += val
+        by_category[row["category_name"]][0] += val
+        by_category[row["category_name"]][1] += qty
+        purchasers[row["customer_id"]] += 1
+    multi_order = sum(1 for n in purchasers.values() if n >= 2)
+    expect = {
+        "Customers": (len(customers), 2123),
+        "Products": (len(products), 70),
+        "Orders": (len(orders), 3339),
+        "Product categories": (len(categories), 7),
+        "Units": (units, 11654),
+        "Purchasers": (len(purchasers), 1671),
+        "Multi-order purchasers": (multi_order, 987),
+    }
+    for name, (actual, baseline) in expect.items():
+        require(actual == baseline, f"{name} changed: {actual} instead of {baseline}")
+    require(total == Decimal("1754750.57"), f"Sales mismatch: {total}")
+    require(yearly[2020] == Decimal("913210.09"), "2020 total mismatch")
+    require(yearly[2021] == Decimal("841540.48"), "2021 total mismatch")
+    require(date_min == date(2020, 1, 1) and date_max == date(2021, 12, 31),
+            "Date coverage does not match baseline")
+    require(by_category["Robots"][0] == Decimal("743505.00"), "Robots sales mismatch")
+    require(by_category["eBooks"][1] == 3123, "eBooks volume mismatch")
+    yoy = 100 * (yearly[2021] / yearly[2020] - 1)
+    print("PASS: PK uniqueness, FKs, dates, gross sales, data privacy, and baseline totals")
+    print(f"Orders: {len(master):,}; units: {units:,}; purchasing customers: {len(purchasers):,}")
+    print(f"Sales value: {total:,.2f}; 2021 YoY: {yoy:.2f}% (currency unspecified)")
+    print(f"Multi-order customer share: {100 * multi_order / len(purchasers):.2f}%")
+    if "--write-report" in sys.argv:
+        md = f"""# Local data validation report\n\nAuto-generated by `scripts/verify_public_data.py` from the public CSVs.\n\n| Check | Result |\n|---|---|\n| Primary keys unique/non-null | PASS |\n| Foreign-key relationships | PASS |\n| Customer PII excluded from public CSV schemas | PASS |\n| Master rows = orders | {len(master):,} |\n| Customer dimension records | {len(customers):,} |\n| Products and product categories | {len(products)} / {len(categories)} |\n| Order date range | {date_min} to {date_max} |\n| Units sold | {units:,} |\n| Total sales value | {total:,.2f} (currency unspecified) |\n| 2020 sales value | {yearly[2020]:,.2f} |\n| 2021 sales value | {yearly[2021]:,.2f} |\n| 2021 YoY sales | {yoy:.2f}% |\n| Purchasing customers | {len(purchasers):,} |\n| Customers with 2+ orders | {multi_order:,} |\n\n**Scope:** This check covers committed public CSV files only. It does not verify whether prior Git history still contains sensitive fields.\n"""
+        report = ROOT / "reports" / "validation_results.md"
+        report.parent.mkdir(exist_ok=True, parents=True)
+        report.write_text(md, encoding="utf-8")
+        print(f"Wrote: {report.relative_to(ROOT)}")
+
+
+if __name__ == "__main__":
+    main()
